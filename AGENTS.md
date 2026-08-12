@@ -2,26 +2,24 @@
 
 ## Project Structure & Module Organization
 
-This repository is currently an empty project scaffold; no source, test, or asset directories have been committed yet. Keep the root reserved for project-wide files such as `README.md`, build configuration, and this guide. As the project grows, group implementation code by responsibility rather than placing it directly in the root. Use conventional top-level locations such as `src/` for source code, `tests/` for automated tests, `scripts/` for developer utilities, and `docs/` for longer documentation. Store fixtures beside the tests that consume them or under `tests/fixtures/`.
+This repository contains the reproducible build inputs for an ImmortalWrt x86-64 EFI image. Keep the root reserved for project-wide files such as `README.md`, `Makefile`, and this guide. Keep ImageBuilder configuration in `config/`, container setup in `docker/`, firmware overlay files in `files/`, and build helpers in `scripts/`. Do not commit firmware images, downloaded ImageBuilder archives, caches, or local backups.
 
 ## Build, Test, and Development Commands
 
-No build system or development commands are defined yet. When adding one, expose a small, discoverable command set through a `Makefile` or the ecosystem's standard task runner. Prefer stable entry points such as:
+Use the Makefile's small, discoverable command set:
 
 - `make build` — produce local build artifacts.
-- `make test` — run the complete automated test suite.
-- `make lint` — run formatting and static-analysis checks.
-- `make clean` — remove generated artifacts only.
+- `make check` — run static validation for tracked build inputs.
 
-Document required tools and exact setup steps in `README.md`. Do not commit generated output, caches, or local environment files.
+Document required tools and exact setup steps in `README.md`. Do not commit generated output, caches, or local environment files. GitHub Actions is the authoritative full build environment.
 
 ## Coding Style & Naming Conventions
 
-Follow the formatter and linter standard for the language introduced, and commit their configuration with the first source files. Use spaces unless the chosen toolchain requires tabs (for example, recipe lines in a `Makefile`). Choose descriptive names: `snake_case` for scripts and shell functions, `kebab-case` for documentation filenames, and the language's normal convention for symbols. Keep modules focused and comments limited to non-obvious decisions.
+Use POSIX shell for firmware init scripts and Bash for host build helpers. Preserve the existing tab indentation in shell scripts; use tabs only for Makefile recipes. Choose descriptive names, keep modules focused, and limit comments to non-obvious decisions.
 
 ## Testing Guidelines
 
-Add tests with every behavior change and bug fix. Mirror source organization under `tests/`, and name tests after observable behavior, such as `test_rejects_invalid_config`. Tests must be deterministic, isolated from developer machines, and runnable with one documented command. New tooling should include a basic smoke test in CI.
+Add deterministic checks for build-script behavior changes. `make check` must remain runnable without Docker, downloaded build assets, or a local firmware image, and GitHub Actions must run it before the full firmware build.
 
 ## Commit & Pull Request Guidelines
 

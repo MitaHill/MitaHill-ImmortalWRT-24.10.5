@@ -28,9 +28,9 @@ make_ipk() {
 	(
 		cd "$package_root"
 		printf '2.0\n' >debian-binary
-		tar --no-mac-metadata --no-xattrs -C control -czf control.tar.gz .
-		tar --no-mac-metadata --no-xattrs -C data -czf data.tar.gz .
-		tar --no-mac-metadata --no-xattrs -czf "$destination" ./debian-binary ./control.tar.gz ./data.tar.gz
+		tar -C control -czf control.tar.gz .
+		tar -C data -czf data.tar.gz .
+		tar -czf "$destination" ./debian-binary ./control.tar.gz ./data.tar.gz
 	)
 }
 
@@ -135,8 +135,9 @@ build_geoview_package() {
 		-o "$temp_dir/geoview-source.tar.gz"
 	tar -xzf "$temp_dir/geoview-source.tar.gz" -C "$source_dir" --strip-components=1
 	docker run --rm --platform linux/amd64 \
+		--user "$(id -u):$(id -g)" \
 		-v "$source_dir:/src" -w /src "$builder_image" \
-		bash -ceu 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /src/geoview .'
+		bash -ceu 'HOME=/tmp GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /src/geoview .'
 	mv "$source_dir/geoview" "$package_root/data/usr/bin/geoview"
 	chmod 0755 "$package_root/data/usr/bin/geoview"
 	printf '%s\n' \
@@ -179,10 +180,9 @@ main() {
 			mkdir -p files packages /output
 			cp -a /overlay/. files/
 			mkdir -p files/etc/rc.d
-			chmod 0755 files/etc/init.d/expand-rootfs files/etc/init.d/refresh-luci-index files/etc/init.d/passwall-naive-migrate
+			chmod 0755 files/etc/init.d/expand-rootfs files/etc/init.d/refresh-luci-index
 			ln -sf ../init.d/expand-rootfs files/etc/rc.d/S99expand-rootfs
 			ln -sf ../init.d/refresh-luci-index files/etc/rc.d/S05refresh-luci-index
-			ln -sf ../init.d/passwall-naive-migrate files/etc/rc.d/S90passwall-naive-migrate
 			cp -a /local-packages/. packages/
 			find packages -name "._*" -delete
 			# The upstream ImageBuilder config enables qcow2/VDI/VMDK by default.

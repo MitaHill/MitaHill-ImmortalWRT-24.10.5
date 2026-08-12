@@ -30,6 +30,19 @@ root_device() {
 	return 1
 }
 
+root_filesystem_type() {
+	local mountpoint source fstype
+
+	for mountpoint in /overlay /; do
+		source="$(findmnt -n -o SOURCE "$mountpoint" 2>/dev/null)"
+		[ "$source" = "$1" ] || continue
+		fstype="$(findmnt -n -o FSTYPE "$mountpoint" 2>/dev/null)"
+		[ -n "$fstype" ] && echo "$fstype" && return 0
+	done
+
+	return 1
+}
+
 is_last_partition() {
 	local part parent_path sibling sibling_parent root_end sibling_end
 
@@ -49,10 +62,12 @@ is_last_partition() {
 }
 
 start() {
-	local rootdev part disk part_number parent old_size new_size loopdev resize_status tries=0
+	local rootdev rootfs_type part disk part_number parent old_size new_size loopdev resize_status tries=0
 
 	[ -e "$marker" ] && return 0
 	rootdev="$(root_device)" || fail "could not determine the root block device" || return 0
+	rootfs_type="$(root_filesystem_type "$rootdev")" || fail "could not determine the root filesystem type" || return 0
+	[ "$rootfs_type" = "ext4" ] || fail "$rootdev uses $rootfs_type, not ext4" || return 0
 	part="$(basename "$rootdev")"
 	[ -r "/sys/class/block/$part/partition" ] || fail "$rootdev is not a physical partition" || return 0
 
@@ -72,7 +87,7 @@ start() {
 		sleep 1
 		tries=$((tries + 1))
 	done
-	[ "$new_size" -gt "$old_size" ] || fail "kernel did not reread $rootdev" || return 0
+	[ "$new_size" -gt "$old_size" ] || log "$rootdev is already at the end of $disk; retrying filesystem expansion"
 
 	loopdev="$(losetup -f)" || fail "could not allocate a loop device" || return 0
 	losetup "$loopdev" "$rootdev" || fail "could not attach $rootdev to $loopdev" || return 0

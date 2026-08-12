@@ -1,0 +1,85 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+marker=/etc/.rootfs-expanded
+log_tag=expand-rootfs
+
+log() {
+	logger -t "$log_tag" "$*"
+}
+
+fail() {
+	log "not expanded: $*"
+	return 1
+}
+
+root_device() {
+	local mountpoint source
+
+	for mountpoint in /overlay /; do
+		source="$(findmnt -n -o SOURCE "$mountpoint" 2>/dev/null)"
+		case "$source" in
+			/dev/*)
+				echo "$source"
+				return 0
+				;;
+		esac
+	done
+
+	return 1
+}
+
+is_last_partition() {
+	local part parent_path sibling sibling_parent root_end sibling_end
+
+	part="$1"
+	parent_path="$(readlink -f "/sys/class/block/$2")" || return 1
+	root_end=$(( $(cat "/sys/class/block/$part/start") + $(cat "/sys/class/block/$part/size") ))
+
+	for sibling in /sys/class/block/*; do
+		[ -r "$sibling/partition" ] || continue
+		sibling_parent="$(readlink -f "$sibling/..")" || continue
+		[ "$sibling_parent" = "$parent_path" ] || continue
+		sibling_end=$(( $(cat "$sibling/start") + $(cat "$sibling/size") ))
+		[ "$sibling_end" -gt "$root_end" ] && return 1
+	done
+
+	return 0
+}
+
+start() {
+	local rootdev part disk part_number parent old_size new_size loopdev resize_status tries=0
+
+	[ -e "$marker" ] && return 0
+	rootdev="$(root_device)" || fail "could not determine the root block device" || return 0
+	part="$(basename "$rootdev")"
+	[ -r "/sys/class/block/$part/partition" ] || fail "$rootdev is not a physical partition" || return 0
+
+	part_number="$(cat "/sys/class/block/$part/partition")"
+	parent="$(basename "$(readlink -f "/sys/class/block/$part/..")")"
+	disk="/dev/$parent"
+	[ -b "$disk" ] || fail "$disk is not a block device" || return 0
+	is_last_partition "$part" "$parent" || fail "$rootdev is not the final partition on $disk" || return 0
+
+	old_size="$(cat "/sys/class/block/$part/size")"
+	parted -s -f "$disk" resizepart "$part_number" 100% || fail "parted could not grow $rootdev" || return 0
+	partprobe "$disk" 2>/dev/null || blockdev --rereadpt "$disk" 2>/dev/null || true
+
+	while [ "$tries" -lt 30 ]; do
+		new_size="$(cat "/sys/class/block/$part/size")"
+		[ "$new_size" -gt "$old_size" ] && break
+		sleep 1
+		tries=$((tries + 1))
+	done
+	[ "$new_size" -gt "$old_size" ] || fail "kernel did not reread $rootdev" || return 0
+
+	loopdev="$(losetup -f)" || fail "could not allocate a loop device" || return 0
+	losetup "$loopdev" "$rootdev" || fail "could not attach $rootdev to $loopdev" || return 0
+	resize2fs -f "$loopdev"
+	resize_status=$?
+	losetup -d "$loopdev" 2>/dev/null || true
+	[ "$resize_status" -eq 0 ] || fail "resize2fs failed for $rootdev" || return 0
+	touch "$marker"
+	log "expanded $rootdev to the end of $disk"
+}

@@ -1,0 +1,6 @@
+.DS_Store
+.cache/
+output/
+test-output/
+imagebuilder/
+passwall-*-backup.tar.gz

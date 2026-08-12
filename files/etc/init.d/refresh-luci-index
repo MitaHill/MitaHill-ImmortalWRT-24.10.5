@@ -1,0 +1,10 @@
+#!/bin/sh /etc/rc.common
+
+# The ImageBuilder package installation can leave a LuCI menu index in the
+# immutable root filesystem.  Remove it before uhttpd starts so locally built
+# LuCI applications (such as Bandix) are discovered on every boot.
+START=05
+
+start() {
+	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/*
+}

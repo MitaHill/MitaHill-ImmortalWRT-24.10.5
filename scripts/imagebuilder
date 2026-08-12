@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly builder_dir="$root_dir/imagebuilder/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64"
+readonly builder_image="immortalwrt-24.10.5-builder:latest"
+readonly builder_volume="immortalwrt-24.10.5-imagebuilder"
+readonly package_dir="$builder_dir/packages"
+readonly output_dir="$root_dir/output"
+
+readonly bandix_commit="fc2ba97f5239d501b621c30c5ccc93a71f1ad47a"
+readonly bandix_luci_commit="8e140ed9080d93389a5054b6440604c61d35e086"
+readonly bandix_version="0.12.9"
+readonly bandix_sha256="4909cf2e80861d082c4d4870950259d8c6f14e606f9dfa16c92514f178f3ae40"
+readonly passwall_release="2026.5.17"
+readonly passwall_package="23.05-24.10_luci-app-passwall_2026.5.17-r1_all.ipk"
+readonly passwall_i18n_package="23.05-24.10_luci-i18n-passwall-zh-cn_2026.5.17_all.ipk"
+readonly geoview_version="0.2.6"
+
+require_command() {
+	command -v "$1" >/dev/null || { echo "Missing required command: $1" >&2; exit 1; }
+}
+
+make_ipk() {
+	local package_name="$1"
+	local package_root="$2"
+	local destination="$3"
+	(
+		cd "$package_root"
+		printf '2.0\n' >debian-binary
+		tar --no-mac-metadata --no-xattrs -C control -czf control.tar.gz .
+		tar --no-mac-metadata --no-xattrs -C data -czf data.tar.gz .
+		tar --no-mac-metadata --no-xattrs -czf "$destination" ./debian-binary ./control.tar.gz ./data.tar.gz
+	)
+}
+
+copy_file() {
+	local source="$1"
+	local destination="$2"
+	local mode="$3"
+	mkdir -p "$(dirname -- "$destination")"
+	cp -p "$source" "$destination"
+	chmod "$mode" "$destination"
+}
+
+fetch_mitahill_passwall() {
+	mkdir -p "$package_dir"
+	curl --fail --location --retry 3 \
+		"https://github.com/MitaHill/openwrt-passwall-mitahill-version/releases/download/${passwall_release}/${passwall_package}" \
+		-o "$package_dir/luci-app-passwall_2026.5.17-r1_all.ipk"
+	curl --fail --location --retry 3 \
+		"https://github.com/MitaHill/openwrt-passwall-mitahill-version/releases/download/${passwall_release}/${passwall_i18n_package}" \
+		-o "$package_dir/luci-i18n-passwall-zh-cn_2026.5.17_all.ipk"
+}
+
+build_bandix_packages() {
+	local temp_dir core_dir luci_dir release_dir package_root
+	temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortalwrt-bandix.XXXXXX")"
+	trap 'rm -rf "$temp_dir"' RETURN
+
+	core_dir="$temp_dir/bandix"
+	luci_dir="$temp_dir/luci-app-bandix"
+	release_dir="$temp_dir/release"
+	mkdir -p "$core_dir" "$luci_dir" "$release_dir" "$package_dir"
+
+	curl --fail --location --retry 3 \
+		"https://github.com/timsaya/openwrt-bandix/archive/${bandix_commit}.tar.gz" \
+		-o "$temp_dir/bandix-source.tar.gz"
+	tar -xzf "$temp_dir/bandix-source.tar.gz" -C "$core_dir" --strip-components=1
+	core_dir="$core_dir/openwrt-bandix"
+	curl --fail --location --retry 3 \
+		"https://github.com/timsaya/luci-app-bandix/archive/${bandix_luci_commit}.tar.gz" \
+		-o "$temp_dir/luci-source.tar.gz"
+	tar -xzf "$temp_dir/luci-source.tar.gz" -C "$luci_dir" --strip-components=1
+	luci_dir="$luci_dir/luci-app-bandix"
+	curl --fail --location --retry 3 \
+		"https://github.com/timsaya/bandix/releases/download/v${bandix_version}/bandix-${bandix_version}-x86_64-unknown-linux-musl.tar.gz" \
+		-o "$temp_dir/bandix-release.tar.gz"
+	echo "$bandix_sha256  $temp_dir/bandix-release.tar.gz" | shasum -a 256 -c -
+	tar -xzf "$temp_dir/bandix-release.tar.gz" -C "$release_dir" --strip-components=1
+
+	package_root="$temp_dir/bandix-ipk"
+	mkdir -p "$package_root/control" "$package_root/data"
+	printf '%s\n' \
+		'Package: bandix' \
+		'Version: 0.12.9-2' \
+		'Architecture: x86_64' \
+		'Depends: zoneinfo-all, conntrack, iw' \
+		'Description: Bandix network traffic monitoring service' >"$package_root/control/control"
+	copy_file "$release_dir/bandix" "$package_root/data/usr/bin/bandix" 0755
+	copy_file "$core_dir/files/bandix.init" "$package_root/data/etc/init.d/bandix" 0755
+	copy_file "$core_dir/files/bandix.config" "$package_root/data/etc/config/bandix" 0644
+	copy_file "$core_dir/files/bandix.keep" "$package_root/data/lib/upgrade/keep.d/bandix" 0644
+	make_ipk bandix "$package_root" "$package_dir/bandix_0.12.9-2_x86_64.ipk"
+
+	package_root="$temp_dir/luci-ipk"
+	mkdir -p "$package_root/control" "$package_root/data/www"
+	printf '%s\n' \
+		'Package: luci-app-bandix' \
+		'Version: 0.12.8-3' \
+		'Architecture: all' \
+		'Depends: luci-base, luci-lib-jsonc, curl, bandix' \
+		'Description: LuCI support for Bandix' >"$package_root/control/control"
+	cp -a "$luci_dir/htdocs/." "$package_root/data/www/"
+	cp -a "$luci_dir/root/." "$package_root/data/"
+	# The upstream menu hides Bandix until LuCI discovers its UCI config.  That
+	# discovery is not reliable during ImageBuilder's offline package install,
+	# so keep the local management page visible to the root administrator.
+	python3 - "$package_root/data/usr/share/luci/menu.d/luci-app-bandix.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    menu = json.load(source)
+menu["admin/network/bandix"].pop("depends", None)
+with open(path, "w", encoding="utf-8") as destination:
+    json.dump(menu, destination, indent="\t")
+    destination.write("\n")
+PY
+	chmod 0755 "$package_root/data/usr/libexec/rpcd/luci.bandix"
+	make_ipk luci-app-bandix "$package_root" "$package_dir/luci-app-bandix_0.12.8-3_all.ipk"
+}
+
+build_geoview_package() {
+	local temp_dir source_dir package_root
+	temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortalwrt-geoview.XXXXXX")"
+	trap 'rm -rf "$temp_dir"' RETURN
+	source_dir="$temp_dir/geoview"
+	package_root="$temp_dir/geoview-ipk"
+	mkdir -p "$source_dir" "$package_root/control" "$package_root/data/usr/bin" "$package_dir"
+
+	curl --fail --location --retry 3 \
+		"https://codeload.github.com/snowie2000/geoview/tar.gz/${geoview_version}" \
+		-o "$temp_dir/geoview-source.tar.gz"
+	tar -xzf "$temp_dir/geoview-source.tar.gz" -C "$source_dir" --strip-components=1
+	docker run --rm --platform linux/amd64 \
+		-v "$source_dir:/src" -w /src "$builder_image" \
+		bash -ceu 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /src/geoview .'
+	mv "$source_dir/geoview" "$package_root/data/usr/bin/geoview"
+	chmod 0755 "$package_root/data/usr/bin/geoview"
+	printf '%s\n' \
+		'Package: geoview' \
+		"Version: ${geoview_version}-1" \
+		'Architecture: x86_64' \
+		'Description: Geo data conversion utility required by PassWall Sing-Box rules' >"$package_root/control/control"
+	make_ipk geoview "$package_root" "$package_dir/geoview_${geoview_version}-1_x86_64.ipk"
+}
+
+main() {
+	for command in curl docker gzip python3 qemu-img shasum tar; do
+		require_command "$command"
+	done
+	[ -d "$builder_dir" ] || { echo "ImageBuilder is missing: $builder_dir" >&2; exit 1; }
+	[ -d "$root_dir/files" ] || { echo "Firmware overlay is missing: $root_dir/files" >&2; exit 1; }
+	docker image inspect "$builder_image" >/dev/null || {
+		echo "Docker builder image is missing: $builder_image" >&2
+		exit 1
+	}
+
+	fetch_mitahill_passwall
+	build_bandix_packages
+	build_geoview_package
+	mkdir -p "$output_dir"
+
+	local packages
+	packages='luci luci-i18n-base-zh-cn luci-app-passwall luci-i18n-passwall-zh-cn bandix luci-app-bandix parted e2fsprogs resize2fs losetup fdisk partx-utils block-mount mount-utils sing-box xray-core v2ray-geoip v2ray-geosite geoview chinadns-ng dns2socks hysteria naiveproxy shadow-tls shadowsocks-rust-sslocal shadowsocks-rust-ssserver tuic-client v2ray-plugin xray-plugin kmod-nf-tproxy kmod-nft-tproxy kmod-nf-socket kmod-nft-socket iptables-mod-tproxy iptables-mod-socket'
+	docker volume inspect "$builder_volume" >/dev/null 2>&1 || docker volume create "$builder_volume" >/dev/null
+	docker run --rm --platform linux/amd64 \
+		-v "$builder_volume:/builder" \
+		-v "$builder_dir:/imagebuilder:ro" \
+		-v "$package_dir:/local-packages:ro" \
+		-v "$root_dir/files:/overlay:ro" \
+		-v "$output_dir:/output" \
+		-w /builder \
+		"$builder_image" \
+		bash -ceu '
+			if [ ! -f Makefile ]; then cp -a /imagebuilder/. /builder/; fi
+			mkdir -p files packages /output
+			cp -a /overlay/. files/
+			mkdir -p files/etc/rc.d
+			chmod 0755 files/etc/init.d/expand-rootfs files/etc/init.d/refresh-luci-index files/etc/init.d/passwall-naive-migrate
+			ln -sf ../init.d/expand-rootfs files/etc/rc.d/S99expand-rootfs
+			ln -sf ../init.d/refresh-luci-index files/etc/rc.d/S05refresh-luci-index
+			ln -sf ../init.d/passwall-naive-migrate files/etc/rc.d/S90passwall-naive-migrate
+			cp -a /local-packages/. packages/
+			find packages -name "._*" -delete
+			# The upstream ImageBuilder config enables qcow2/VDI/VMDK by default.
+			# This minimal build container intentionally has no qemu-img; convert the
+			# EFI raw image on the macOS host after a successful build instead.
+			sed -i \
+				-e "s/^CONFIG_QCOW2_IMAGES=y/# CONFIG_QCOW2_IMAGES is not set/" \
+				-e "s/^CONFIG_VDI_IMAGES=y/# CONFIG_VDI_IMAGES is not set/" \
+				-e "s/^CONFIG_VMDK_IMAGES=y/# CONFIG_VMDK_IMAGES is not set/" \
+				-e "s/^CONFIG_VHDX_IMAGES=y/# CONFIG_VHDX_IMAGES is not set/" \
+				-e "s/^CONFIG_ISO_IMAGES=y/# CONFIG_ISO_IMAGES is not set/" .config
+			export MKHASH=/builder/staging_dir/host/bin/mkhash
+			# ImageBuilder keeps a package-installed root filesystem in the named
+			# volume.  Recreate that generated tree on every image build so updated
+			# local IPKs are unpacked rather than only reflected in opkg status.
+			rm -rf build_dir/target-x86_64_musl/root-x86
+			if ! make image PROFILE=generic FILES=files ROOTFS_PARTSIZE=512 PACKAGES="$1" > /builder/imagebuilder.log 2>&1; then
+				tail -n 200 /builder/imagebuilder.log >&2
+				exit 1
+			fi
+			cp -f bin/targets/x86/64/*-ext4-combined-efi.img.gz /output/
+			awk '\''
+				/^Package: / { package = $2 }
+				/^Version: / { version = $2 }
+				/^Status: install/ { print package " " version }
+			'\'' build_dir/target-x86_64_musl/root-x86/usr/lib/opkg/status | sort > /output/immortalwrt-24.10.5-x86-64-generic-ext4-combined-efi.manifest
+		' -- "$packages"
+
+	local efi_image raw_image
+	efi_image="$output_dir/immortalwrt-24.10.5-x86-64-generic-ext4-combined-efi.img.gz"
+	raw_image="$(mktemp "${TMPDIR:-/tmp}/immortalwrt-efi.XXXXXX.img")"
+	trap 'rm -f "$raw_image"' RETURN
+	if ! gzip -cd "$efi_image" >"$raw_image"; then
+		[ -s "$raw_image" ] || { echo "Unable to decompress $efi_image" >&2; exit 1; }
+	fi
+	qemu-img convert -f raw -O qcow2 "$raw_image" "$output_dir/immortalwrt-24.10.5-x86-64-generic-ext4-combined-efi.qcow2"
+	printf 'Build artifacts written to %s\n' "$output_dir"
+}
+
+main "$@"

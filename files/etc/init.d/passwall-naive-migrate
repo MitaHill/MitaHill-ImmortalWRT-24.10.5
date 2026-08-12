@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+
+# PassWall versions before the Sing-Box 1.12 migration stored Naive nodes as
+# type=sing-box, protocol=naive.  Sing-Box now rejects that outbound type.
+START=90
+
+start() {
+	local section field value
+	for section in $(uci show passwall 2>/dev/null | sed -n 's/^passwall\.\([^.=]*\)=nodes$/\1/p'); do
+		[ "$(uci -q get "passwall.${section}.type")" = "sing-box" ] || continue
+		[ "$(uci -q get "passwall.${section}.protocol")" = "naive" ] || continue
+
+		uci set "passwall.${section}.type=Naiveproxy"
+		uci set "passwall.${section}.naive_protocol=https"
+		for field in address port username password; do
+			value="$(uci -q get "passwall.${section}.${field}")"
+			[ -n "$value" ] && uci set "passwall.${section}.naive_${field}=${value}"
+		done
+	done
+	uci commit passwall
+}

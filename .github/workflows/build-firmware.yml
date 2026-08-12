@@ -1,0 +1,42 @@
+name: Build ImmortalWrt firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils zstd
+
+      - name: Download ImmortalWrt ImageBuilder
+        run: |
+          mkdir -p imagebuilder
+          curl --fail --location --retry 3 \
+            https://downloads.immortalwrt.org/releases/24.10.5/targets/x86/64/immortalwrt-imagebuilder-24.10.5-x86-64.Linux-x86_64.tar.zst \
+            -o /tmp/immortalwrt-imagebuilder.tar.zst
+          tar --use-compress-program=unzstd -xf /tmp/immortalwrt-imagebuilder.tar.zst -C imagebuilder
+
+      - name: Build builder image
+        run: docker build --platform linux/amd64 -t immortalwrt-24.10.5-builder:latest docker
+
+      - name: Build firmware
+        run: scripts/imagebuilder
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-24.10.5-x86-64-efi
+          path: output/
+          if-no-files-found: error
+          retention-days: 14
